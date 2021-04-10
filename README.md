@@ -7,3 +7,6 @@ It's project uses the libraries:
  - ILI9341_t3n - https://github.com/KurtE/ILI9341_t3n
  - Mavlink - https://github.com/mavlink
  - Thread - Juraj
+
+# Wiring Diagram
+![alt text](https://github.com/paulopilot/MicroEFIS_Mavlink_T4/blob/main/images/Wiring%20Diagram.png?raw=true)
