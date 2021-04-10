@@ -279,6 +279,16 @@ public:
   void setRotation(uint8_t r);
   void setScroll(uint16_t offset);
   void invertDisplay(boolean i);
+  
+  
+  // Funões personalidas utilizada no MicroPFD
+  // By Paulo Almeida
+  // falmeida.paulo@gmail.com
+  float _angleOffset = DEFAULT_ANGLE_OFFSET;
+  void drawArc(int x, int y, int r, int startAngle, int endAngle, uint16_t color);
+  void drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t length, uint16_t color);
+  void drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t start, uint16_t length, uint16_t color);
+  
   void setAddrWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
   // Pass 8-bit (each) R,G,B, get back 16-bit packed color
   static uint16_t color565(uint8_t r, uint8_t g, uint8_t b) {
@@ -313,6 +323,8 @@ public:
 
   // uint8_t readdata(void);
   uint8_t readcommand8(uint8_t reg, uint8_t index = 0);
+  uint16_t readScanLine();
+  void setFrameRateControl(uint8_t mode);
 
   // Added functions to read pixel data...
   uint16_t readPixel(int16_t x, int16_t y);
@@ -320,6 +332,12 @@ public:
   void writeRect(int16_t x, int16_t y, int16_t w, int16_t h,
                  const uint16_t *pcolors);
 
+  void writeSubImageRect(int16_t x, int16_t y, int16_t w, int16_t h, 
+                        int16_t image_offset_x, int16_t image_offset_y, int16_t image_width, int16_t image_height, 
+                        const uint16_t *pcolors);
+  void writeSubImageRectBytesReversed(int16_t x, int16_t y, int16_t w, int16_t h, 
+                        int16_t image_offset_x, int16_t image_offset_y, int16_t image_width, int16_t image_height, 
+                        const uint16_t *pcolors);
   // writeRect8BPP - 	write 8 bit per pixel paletted bitmap
   //					bitmap data in array at pixels, one byte per
   //pixel
@@ -455,7 +473,7 @@ public:
                      int16_t *y1, uint16_t *w, uint16_t *h);
   void getTextBounds(const String &str, int16_t x, int16_t y, int16_t *x1,
                      int16_t *y1, uint16_t *w, uint16_t *h);
-  int16_t strPixelLen(const char *str);
+  int16_t strPixelLen(const char *str, uint16_t cb=0xffff);  // optional number of characters...
 
   // added support for drawing strings/numbers/floats with centering
   // modified from tft_ili9341_ESP github library
@@ -464,14 +482,9 @@ public:
   int16_t drawFloat(float floatNumber, int decimal, int poX, int poY);
   // Handle char arrays
   int16_t drawString(const String &string, int poX, int poY);
-  int16_t drawString1(char string[], int16_t len, int poX, int poY);
+  int16_t drawString(const char string[], int16_t len, int poX, int poY);
 
   void setTextDatum(uint8_t datum);
-  
-  float _angleOffset = DEFAULT_ANGLE_OFFSET;
-  void drawArc(int x, int y, int r, int startAngle, int endAngle, uint16_t color);
-  void drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t length, uint16_t color);
-  void drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t start, uint16_t length, uint16_t color);
 
   // added support for scrolling text area
   // https://github.com/vitormhenrique/ILI9341_t3
@@ -612,6 +625,7 @@ protected:
   void waitFifoNotFull(void);
   void waitFifoEmpty(void);
   void waitTransmitComplete(void);
+  uint16_t waitTransmitCompleteReturnLast();
   void waitTransmitComplete(uint32_t mcr);
 #elif defined(KINETISL)
 #endif
@@ -1118,7 +1132,6 @@ protected:
                     int32_t y, uint32_t repeat);
   void drawFontPixel(uint8_t alpha, uint32_t x, uint32_t y);
   uint32_t fetchpixel(const uint8_t *p, uint32_t index, uint32_t x);
-  
 };
 
 #ifndef ILI9341_swap
@@ -1194,8 +1207,6 @@ public:
   bool isPressed() { return currstate; }
   bool justPressed() { return (currstate && !laststate); }
   bool justReleased() { return (!currstate && laststate); }
-  
-  
 
 private:
   ILI9341_t3n *_gfx;

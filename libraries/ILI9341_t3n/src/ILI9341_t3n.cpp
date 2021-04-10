@@ -932,6 +932,63 @@ void ILI9341_t3n::waitUpdateAsyncComplete(void) {
 #endif
 //=======================================================================
 
+/*************************************************************************************
+*	Funões personalidas utilizada no MicroPFD
+*	By Paulo Almeida
+*   falmeida.paulo@gmail.com
+**************************************************************************************/
+void ILI9341_t3n::drawArc(int x, int y, int r, int startAngle, int endAngle, uint16_t color) {
+	/* original code from Henning Karlsen (http://www.rinkydinkelectronics.com)
+	  This library is free software; you can redistribute it and/or
+	  modify it under the terms of the CC BY-NC-SA 3.0 license.
+	  Please see the included documents for further information.
+	*/
+	int cx, cy;
+	startAngle -= 90;
+	endAngle   -= 90;
+
+	if (startAngle != endAngle) {
+		for (int d = startAngle + 1; d < endAngle + 1; d++) {
+			cx = x + cos((d * 3.14) / 180) * r;
+			cy = y + sin((d * 3.14) / 180) * r;
+			drawPixel(cx, cy, color);
+		}
+	} else {
+		cx = x + cos((startAngle * 3.14) / 180) * r;
+		cy = y + sin((startAngle * 3.14) / 180) * r;
+		drawPixel(cx, cy, color);
+	}
+}
+
+void ILI9341_t3n::drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t length, uint16_t color)
+{
+	//beginTransaction();
+	uint16_t x1 = x + length * cos((angle + _angleOffset) * DEG_TO_RAD);
+	uint16_t y1 = y + length * sin((angle + _angleOffset) * DEG_TO_RAD);
+	
+	if ((x1 > x) && (x1 > WIDTH)) x1 = WIDTH -1;
+	if ((x1 < x) && (x1 < 0)) x1 = 0;
+	
+	if ((y1 > y) && (y1 > HEIGHT)) y1 = HEIGHT -1;
+	if ((y1 < y) && (y1 < 0)) y1 = 0;
+	
+	drawLine(
+		x,
+		y,
+		x1,
+		y1, color);
+	//endTransaction();
+}
+
+void ILI9341_t3n::drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t start, uint16_t length, uint16_t color)
+{
+	drawLine(
+		x + start * cos((angle + _angleOffset) * DEG_TO_RAD),
+		y + start * sin((angle + _angleOffset) * DEG_TO_RAD),
+		x + (start + length) * cos((angle + _angleOffset) * DEG_TO_RAD),
+		y + (start + length) * sin((angle + _angleOffset) * DEG_TO_RAD), color);
+}
+
 void ILI9341_t3n::setAddrWindow(uint16_t x0, uint16_t y0, uint16_t x1,
                                 uint16_t y1) {
   beginSPITransaction(_SPI_CLOCK);
@@ -1638,6 +1695,108 @@ uint8_t ILI9341_t3n::readcommand8(uint8_t c, uint8_t index) {
 #endif
 }
 
+
+uint16_t ILI9341_t3n::readScanLine() {
+if (_miso == 0xff)  return 0; // dont have miso pin
+
+#ifdef KINETISK
+  beginSPITransaction(_SPI_CLOCK_READ);
+  writecommand_cont(0x45); // read from RAM
+
+  // transmit a DUMMY byte before the color bytes
+  _pkinetisk_spi->PUSHR =
+      0 | (pcs_data << 16) | SPI_PUSHR_CTAS(0) | SPI_PUSHR_CONT;
+
+  // skip values returned by the queued up transfers and the current in-flight
+  // transfer
+  uint32_t sr = _pkinetisk_spi->SR;
+  uint8_t skipCount = ((sr >> 4) & 0xF) + ((sr >> 12) & 0xF) + 1;
+
+  uint8_t txCount = 2;
+  uint8_t rxCount = 2;
+  uint8_t rxVals[2];
+  while (txCount || rxCount) {
+    // transmit another byte if possible
+    if (txCount && (_pkinetisk_spi->SR & 0xF000) <= _fifo_full_test) {
+      txCount--;
+      if (txCount) {
+        _pkinetisk_spi->PUSHR = 0 | (pcs_data << 16) |
+                                SPI_PUSHR_CTAS(0) | SPI_PUSHR_CONT;
+      } else {
+        _pkinetisk_spi->PUSHR = 0 | (pcs_data << 16) |
+                                SPI_PUSHR_CTAS(0) | SPI_PUSHR_EOQ;
+      }
+    }
+
+    // receive another byte if possible, and either skip it or store the color
+    if (rxCount && (_pkinetisk_spi->SR & 0xF0)) {
+      uint8_t rx = _pkinetisk_spi->POPR;
+
+      if (skipCount) {
+        skipCount--;
+      } else {
+        rxCount--;
+        rxVals[rxCount] = rx;
+      }
+    }
+  }
+
+  // wait for End of Queue
+  while ((_pkinetisk_spi->SR & SPI_SR_EOQF) == 0)
+    ;
+  _pkinetisk_spi->SR = SPI_SR_EOQF; // make sure it is clear
+  endSPITransaction();
+
+  return rxVals[0] + (uint16_t)(rxVals[1] << 8); // TODO...
+
+#elif defined(__IMXRT1062__)
+
+  // clear out queues. 
+
+  beginSPITransaction(_SPI_CLOCK_READ);
+//  _pimxrt_spi->SR = LPSPI_SR_TCF | LPSPI_SR_FCF | LPSPI_SR_WCF;
+  _pimxrt_spi->SR = LPSPI_SR_TCF | LPSPI_SR_FCF | LPSPI_SR_WCF;
+//  writecommand_cont(0x45); // This will wait until it completes
+  maybeUpdateTCR(_tcr_dc_assert | LPSPI_TCR_FRAMESZ(7) | LPSPI_TCR_CONT);
+  // BUGBUG - maybe update does not hold CONT if we are handling DC as IO pin... 
+  // so see if hacking it helps...
+  _pimxrt_spi->TCR = _spi_tcr_current | LPSPI_TCR_CONT;
+
+  _pimxrt_spi->TDR = 0x45; // send command
+  pending_rx_count++; //
+  while (!(_pimxrt_spi->SR & LPSPI_SR_WCF)) ; // wait until word complete
+  delayMicroseconds(3);
+  _pimxrt_spi->TCR = _spi_tcr_current;
+  maybeUpdateTCR(_tcr_dc_not_assert | LPSPI_TCR_FRAMESZ(7));
+  _pimxrt_spi->TDR = 0;
+  pending_rx_count++; //
+  maybeUpdateTCR(_tcr_dc_not_assert | LPSPI_TCR_FRAMESZ(7) );
+  _pimxrt_spi->TDR = 0;
+  pending_rx_count++; //
+//  _pimxrt_spi->TDR = 0;
+//  pending_rx_count++; //
+
+  uint16_t line = waitTransmitCompleteReturnLast();
+  endSPITransaction();
+  return line;
+#else
+  // TLC
+  return 0;
+#endif
+
+}
+
+void ILI9341_t3n::setFrameRateControl(uint8_t mode) {
+  // Do simple version
+  beginSPITransaction(_SPI_CLOCK/4);
+  writecommand_cont(ILI9341_FRMCTR1);
+  writedata8_cont((mode >> 4) & 0x3); // Output DIVA setting (0-3)
+  writedata8_last(0x10 + (mode & 0xf)); // Output RTNA
+  endSPITransaction();
+}
+
+
+
 // Read Pixel at x,y and get back 16-bit packed color
 #define READ_PIXEL_PUSH_BYTE 0x3f
 uint16_t ILI9341_t3n::readPixel(int16_t x, int16_t y) {
@@ -2028,6 +2187,155 @@ void ILI9341_t3n::writeRect(int16_t x, int16_t y, int16_t w, int16_t h,
   endSPITransaction();
 }
 
+// Now lets see if we can writemultiple pixels
+//                                    screen rect
+void ILI9341_t3n::writeSubImageRect(int16_t x, int16_t y, int16_t w, int16_t h, 
+  int16_t image_offset_x, int16_t image_offset_y, int16_t image_width, int16_t image_height, const uint16_t *pcolors)
+{
+  if (x == CENTER) x = (_width - w) / 2;
+  if (y == CENTER) y = (_height - h) / 2;
+  x+=_originx;
+  y+=_originy;
+  // Rectangular clipping 
+
+  // See if the whole thing out of bounds...
+  if((x >= _displayclipx2) || (y >= _displayclipy2)) return;
+  if (((x+w) <= _displayclipx1) || ((y+h) <= _displayclipy1)) return;
+
+  // Now lets use or image offsets to get to the first pixels data
+  pcolors += image_offset_y * image_width + image_offset_x;
+
+  // In these cases you can not do simple clipping, as we need to synchronize the colors array with the
+  // We can clip the height as when we get to the last visible we don't have to go any farther. 
+  // also maybe starting y as we will advance the color array. 
+  if(y < _displayclipy1) {
+    int dy = (_displayclipy1 - y);
+    h -= dy; 
+    pcolors += (dy * image_width); // Advance color array by that number of rows in the image 
+    y = _displayclipy1;   
+  }
+
+  if((y + h - 1) >= _displayclipy2) h = _displayclipy2 - y;
+
+  // For X see how many items in color array to skip at start of row and likewise end of row 
+  if(x < _displayclipx1) {
+    uint16_t x_clip_left = _displayclipx1-x; 
+    w -= x_clip_left; 
+    x = _displayclipx1;   
+    pcolors += x_clip_left;  // pre index the colors array.
+  }
+  if((x + w - 1) >= _displayclipx2) {
+    uint16_t x_clip_right = w;
+    w = _displayclipx2  - x;
+    x_clip_right -= w; 
+  } 
+
+  #ifdef ENABLE_ILI9341_FRAMEBUFFER
+  if (_use_fbtft) {
+    uint16_t * pfbPixel_row = &_pfbtft[ y*_width + x];
+    for (;h>0; h--) {
+      const uint16_t *pcolors_row = pcolors; 
+      uint16_t * pfbPixel = pfbPixel_row;
+      for (int i = 0 ;i < w; i++) {
+        *pfbPixel++ = *pcolors++;
+      }
+      pfbPixel_row += _width;
+      pcolors = pcolors_row + image_width;
+    }
+    return; 
+  }
+  #endif
+
+  beginSPITransaction(_SPI_CLOCK);
+  setAddr(x, y, x+w-1, y+h-1);
+  writecommand_cont(ILI9341_RAMWR);
+  for(y=h; y>0; y--) {
+    const uint16_t *pcolors_row = pcolors; 
+    for(x=w; x>1; x--) {
+      writedata16_cont(*pcolors++);
+    }
+    writedata16_last(*pcolors++);
+    pcolors = pcolors_row + image_width;
+  }
+  endSPITransaction();
+}
+
+void ILI9341_t3n::writeSubImageRectBytesReversed(int16_t x, int16_t y, int16_t w, int16_t h, 
+  int16_t image_offset_x, int16_t image_offset_y, int16_t image_width, int16_t image_height, const uint16_t *pcolors)
+{
+  if (x == CENTER) x = (_width - w) / 2;
+  if (y == CENTER) y = (_height - h) / 2;
+  x+=_originx;
+  y+=_originy;
+  // Rectangular clipping 
+
+  // See if the whole thing out of bounds...
+  if((x >= _displayclipx2) || (y >= _displayclipy2)) return;
+  if (((x+w) <= _displayclipx1) || ((y+h) <= _displayclipy1)) return;
+
+  // Now lets use or image offsets to get to the first pixels data
+  pcolors += image_offset_y * image_width + image_offset_x;
+
+  // In these cases you can not do simple clipping, as we need to synchronize the colors array with the
+  // We can clip the height as when we get to the last visible we don't have to go any farther. 
+  // also maybe starting y as we will advance the color array. 
+  if(y < _displayclipy1) {
+    int dy = (_displayclipy1 - y);
+    h -= dy; 
+    pcolors += (dy * image_width); // Advance color array by that number of rows in the image 
+    y = _displayclipy1;   
+  }
+
+  if((y + h - 1) >= _displayclipy2) h = _displayclipy2 - y;
+
+  // For X see how many items in color array to skip at start of row and likewise end of row 
+  if(x < _displayclipx1) {
+    uint16_t x_clip_left = _displayclipx1-x; 
+    w -= x_clip_left; 
+    x = _displayclipx1;   
+    pcolors += x_clip_left;  // pre index the colors array.
+  }
+  if((x + w - 1) >= _displayclipx2) {
+    uint16_t x_clip_right = w;
+    w = _displayclipx2  - x;
+    x_clip_right -= w; 
+  } 
+
+  #ifdef ENABLE_ILI9341_FRAMEBUFFER
+  if (_use_fbtft) {
+    uint16_t * pfbPixel_row = &_pfbtft[ y*_width + x];
+    for (;h>0; h--) {
+      const uint16_t *pcolors_row = pcolors; 
+      uint16_t * pfbPixel = pfbPixel_row;
+      for (int i = 0 ;i < w; i++) {
+        *pfbPixel++ = *pcolors++;
+      }
+      pfbPixel_row += _width;
+      pcolors = pcolors_row + image_width;
+    }
+    return; 
+  }
+  #endif
+
+  beginSPITransaction(_SPI_CLOCK);
+  setAddr(x, y, x+w-1, y+h-1);
+  writecommand_cont(ILI9341_RAMWR);
+  for(y=h; y>0; y--) {
+    const uint16_t *pcolors_row = pcolors; 
+    for(x=w; x>1; x--) {
+      uint16_t color = *pcolors++;
+      color = ((color & 0xff) << 8) + (color >> 8);
+      writedata16_cont(color);
+    }
+      uint16_t color = *pcolors;
+      color = ((color & 0xff) << 8) + (color >> 8);
+      writedata16_last(color);
+    pcolors = pcolors_row + image_width;
+  }
+  endSPITransaction();
+}
+
+
 // writeRect8BPP - 	write 8 bit per pixel paletted bitmap
 //					bitmap data in array at pixels, one byte per
 //pixel
@@ -2264,113 +2572,28 @@ void ILI9341_t3n::writeRectNBPP(int16_t x, int16_t y, int16_t w, int16_t h,
   endSPITransaction();
 }
 
-static const uint8_t init_commands[] = {4,
-                                        0xEF,
-                                        0x03,
-                                        0x80,
-                                        0x02,
-                                        4,
-                                        0xCF,
-                                        0x00,
-                                        0XC1,
-                                        0X30,
-                                        5,
-                                        0xED,
-                                        0x64,
-                                        0x03,
-                                        0X12,
-                                        0X81,
-                                        4,
-                                        0xE8,
-                                        0x85,
-                                        0x00,
-                                        0x78,
-                                        6,
-                                        0xCB,
-                                        0x39,
-                                        0x2C,
-                                        0x00,
-                                        0x34,
-                                        0x02,
-                                        2,
-                                        0xF7,
-                                        0x20,
-                                        3,
-                                        0xEA,
-                                        0x00,
-                                        0x00,
-                                        2,
-                                        ILI9341_PWCTR1,
-                                        0x23, // Power control
-                                        2,
-                                        ILI9341_PWCTR2,
-                                        0x10, // Power control
-                                        3,
-                                        ILI9341_VMCTR1,
-                                        0x3e,
-                                        0x28, // VCM control
-                                        2,
-                                        ILI9341_VMCTR2,
-                                        0x86, // VCM control2
-                                        2,
-                                        ILI9341_MADCTL,
-                                        0x48, // Memory Access Control
-                                        2,
-                                        ILI9341_PIXFMT,
-                                        0x55,
-                                        3,
-                                        ILI9341_FRMCTR1,
-                                        0x00,
-                                        0x18,
-                                        4,
-                                        ILI9341_DFUNCTR,
-                                        0x08,
-                                        0x82,
-                                        0x27, // Display Function Control
-                                        2,
-                                        0xF2,
-                                        0x00, // Gamma Function Disable
-                                        2,
-                                        ILI9341_GAMMASET,
-                                        0x01, // Gamma curve selected
-                                        16,
-                                        ILI9341_GMCTRP1,
-                                        0x0F,
-                                        0x31,
-                                        0x2B,
-                                        0x0C,
-                                        0x0E,
-                                        0x08,
-                                        0x4E,
-                                        0xF1,
-                                        0x37,
-                                        0x07,
-                                        0x10,
-                                        0x03,
-                                        0x0E,
-                                        0x09,
-                                        0x00, // Set Gamma
-                                        16,
-                                        ILI9341_GMCTRN1,
-                                        0x00,
-                                        0x0E,
-                                        0x14,
-                                        0x03,
-                                        0x11,
-                                        0x07,
-                                        0x31,
-                                        0xC1,
-                                        0x48,
-                                        0x08,
-                                        0x0F,
-                                        0x0C,
-                                        0x31,
-                                        0x36,
-                                        0x0F, // Set Gamma
-                                        3,
-                                        0xb1,
-                                        0x00,
-                                        0x10, // FrameRate Control 119Hz
+static const uint8_t PROGMEM init_commands[] = {4, 0xEF, 0x03, 0x80, 0x02,
+                                        4, 0xCF, 0x00, 0XC1, 0X30, 
+                                        5, 0xED, 0x64, 0x03, 0X12, 0X81, 
+                                        4, 0xE8, 0x85, 0x00, 0x78, 
+                                        6, 0xCB, 0x39, 0x2C, 0x00, 0x34, 0x02,
+                                        2, 0xF7, 0x20,
+                                        3, 0xEA, 0x00, 0x00,
+                                        2, ILI9341_PWCTR1, 0x23, // Power control
+                                        2, ILI9341_PWCTR2, 0x10, // Power control
+                                        3, ILI9341_VMCTR1, 0x3e, 0x28, // VCM control
+                                        2, ILI9341_VMCTR2, 0x86, // VCM control2
+                                        2, ILI9341_MADCTL, 0x48, // Memory Access Control
+                                        2, ILI9341_PIXFMT, 0x55,
+                                        3, ILI9341_FRMCTR1, 0x00, 0x18,
+                                        4, ILI9341_DFUNCTR, 0x08, 0x82, 0x27, // Display Function Control
+                                        2, 0xF2, 0x00, // Gamma Function Disable
+                                        2, ILI9341_GAMMASET, 0x01, // Gamma curve selected
+                                        16, ILI9341_GMCTRP1, 0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E,
+                                            0xF1, 0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00, // Set Gamma
+                                        16, ILI9341_GMCTRN1, 0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31,
+                                            0xC1, 0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F, // Set Gamma
+                                        3, 0xb1, 0x00, 0x10, // FrameRate Control 119Hz
                                         0};
 
 FLASHMEM void ILI9341_t3n::begin(uint32_t spi_clock, uint32_t spi_clock_read) {
@@ -2538,7 +2761,7 @@ FLASHMEM void ILI9341_t3n::begin(uint32_t spi_clock, uint32_t spi_clock_read) {
           x = readcommand8(ILI9341_RDSELFDIAG);
           Serial.print("\nSelf Diagnostic: 0x"); Serial.println(x, HEX);
   */
-  beginSPITransaction(_SPI_CLOCK);
+  beginSPITransaction(_SPI_CLOCK/4);
   const uint8_t *addr = init_commands;
   while (1) {
     uint8_t count = *addr++;
@@ -2977,11 +3200,11 @@ size_t ILI9341_t3n::write(const uint8_t *buffer, size_t size) {
     // Note we may want to play with the x ane y returned if they offset some
     if (_center_x_text &&
         strngWidth > 0) { // Avoid operations for strngWidth = 0
-      cursor_x -= ((x + strngWidth) / 2);
+      cursor_x -= (x + strngWidth / 2);
     }
     if (_center_y_text &&
         strngHeight > 0) { // Avoid operations for strngWidth = 0
-      cursor_y -= ((y + strngHeight) / 2);
+      cursor_y -= (y + strngHeight / 2);
     }
     _center_x_text = false;
     _center_y_text = false;
@@ -3915,7 +4138,8 @@ void ILI9341_t3n::drawFontChar(unsigned int c) {
 }
 
 // strPixelLen			- gets pixel length of given ASCII string
-int16_t ILI9341_t3n::strPixelLen(const char *str) {
+// note, it will exit if end of str or cb has been reached. 
+int16_t ILI9341_t3n::strPixelLen(const char *str, uint16_t cb) {
   //	//Serial.printf("strPixelLen %s\n", str);
   if (!str)
     return (0);
@@ -3924,12 +4148,14 @@ int16_t ILI9341_t3n::strPixelLen(const char *str) {
     // them...
     int16_t x, y;
     uint16_t w, h;
-    getTextBounds(str, cursor_x, cursor_y, &x, &y, &w, &h);
+    if (cb == 0xffff) getTextBounds(str, cursor_x, cursor_y, &x, &y, &w, &h);  // default no count passed in
+    else getTextBounds((const uint8_t *)str, cb, cursor_x, cursor_y, &x, &y, &w, &h);
     return w;
   }
 
   uint16_t len = 0, maxlen = 0;
-  while (*str) {
+  while (*str && cb) {
+    cb--; // handle case where user passes in string...
     if (*str == '\n') {
       if (len > maxlen) {
         maxlen = len;
@@ -4024,7 +4250,7 @@ void ILI9341_t3n::charBounds(char c, int16_t *x, int16_t *y, int16_t *minx,
       } else {
         return;
       }
-      // Serial.printf("  index =  %d\n", fetchbits_unsigned(font->index,
+      // Serial.printf("  char = %c index =  %d\n", c, fetchbits_unsigned(font->index,
       // bitoffset, font->bits_index));
       data = font->data +
              fetchbits_unsigned(font->index, bitoffset, font->bits_index);
@@ -4038,17 +4264,25 @@ void ILI9341_t3n::charBounds(char c, int16_t *x, int16_t *y, int16_t *minx,
       bitoffset += font->bits_height;
       // Serial.printf("  size =   %d,%d\n", width, height);
       // Serial.printf("  line space = %d\n", font->line_space);
+      // Serial.printf("  cap height = %d\n", font->cap_height);
 
       int32_t xoffset = fetchbits_signed(data, bitoffset, font->bits_xoffset);
       bitoffset += font->bits_xoffset;
       int32_t yoffset = fetchbits_signed(data, bitoffset, font->bits_yoffset);
       bitoffset += font->bits_yoffset;
-
+      // Serial.printf("  offsets  = x:%d y:%d\n",  xoffset,  yoffset);
+       
       uint32_t delta = fetchbits_unsigned(data, bitoffset, font->bits_delta);
       bitoffset += font->bits_delta;
+    
+      // Compute ys using drawFontChar stuff?
+      //int32_t drawfontchar_y = *y + font->cap_height - height - yoffset;
+      //Serial.printf("  DFCY: %u %u\n", drawfontchar_y, drawfontchar_y+height);
 
-      int16_t x1 = *x + xoffset, y1 = *y + yoffset, x2 = x1 + width,
-              y2 = y1 + height;
+      int16_t x1 = *x + xoffset;
+      int16_t y1 = *y + font->cap_height - height - yoffset;
+      int16_t x2 = x1 + width;
+      int16_t y2 = y1 + height;
 
       if (wrap && (x2 > _width)) {
         *x = 0; // Reset x to zero, advance y by one line
@@ -4133,8 +4367,11 @@ void ILI9341_t3n::getTextBounds(const uint8_t *buffer, uint16_t len, int16_t x,
 
   int16_t minx = _width, miny = _height, maxx = -1, maxy = -1;
 
-  while (len--)
-    charBounds(*buffer++, &x, &y, &minx, &miny, &maxx, &maxy);
+  while (len--) {
+    uint8_t c = *buffer++;
+    charBounds(c, &x, &y, &minx, &miny, &maxx, &maxy);
+    //Serial.printf("%c in(%d %d) out(%d %d) - min(%d %d) max(%d %d)\n", c, *x1, *y1, x, y, minx, miny, maxx, maxy);
+  }
 
   if (maxx >= minx) {
     *x1 = minx;
@@ -4144,6 +4381,7 @@ void ILI9341_t3n::getTextBounds(const uint8_t *buffer, uint16_t len, int16_t x,
     *y1 = miny;
     *h = maxy - miny + 1;
   }
+  //Serial.printf("GTB %d %d %d %d\n", *x1, *y1, *w, *h);
 }
 
 void ILI9341_t3n::getTextBounds(const char *str, int16_t x, int16_t y,
@@ -4157,8 +4395,10 @@ void ILI9341_t3n::getTextBounds(const char *str, int16_t x, int16_t y,
 
   int16_t minx = _width, miny = _height, maxx = -1, maxy = -1;
 
-  while ((c = *str++))
+  while ((c = *str++)) {
     charBounds(c, &x, &y, &minx, &miny, &maxx, &maxy);
+    //Serial.printf("%c in(%d %d) out(%d %d) - min(%d %d) max(%d %d)\n", c, *x1, *y1, x, y, minx, miny, maxx, maxy);
+  }
 
   if (maxx >= minx) {
     *x1 = minx;
@@ -4168,6 +4408,7 @@ void ILI9341_t3n::getTextBounds(const char *str, int16_t x, int16_t y,
     *y1 = miny;
     *h = maxy - miny + 1;
   }
+  //Serial.printf("GTB %d %d %u %u\n", *x1, *y1, *w, *h);
 }
 
 void ILI9341_t3n::getTextBounds(const String &str, int16_t x, int16_t y,
@@ -4830,15 +5071,15 @@ int16_t ILI9341_t3n::drawString(const String &string, int poX, int poY) {
   int16_t len = string.length() + 2;
   char buffer[len];
   string.toCharArray(buffer, len);
-  return drawString1(buffer, len, poX, poY);
+  return drawString(buffer, len-2, poX, poY);
 }
 
-int16_t ILI9341_t3n::drawString1(char string[], int16_t len, int poX, int poY) {
+int16_t ILI9341_t3n::drawString(const char string[], int16_t len, int poX, int poY) {
   int16_t sumX = 0;
   uint8_t padding = 1 /*, baseline = 0*/;
 
   uint16_t cwidth =
-      strPixelLen(string); // Find the pixel width of the string in the font
+      strPixelLen(string, len); // Find the pixel width of the string in the font
   uint16_t cheight = textsize_y * 6;
 
   if (textdatum || padX) {
@@ -4906,14 +5147,14 @@ int16_t ILI9341_t3n::drawString1(char string[], int16_t len, int poX, int poY) {
     // if (poY+cheight-baseline >_height) poY = _height - cheight;
   }
   if (font == NULL) {
-    for (uint8_t i = 0; i < len - 2; i++) {
+    for (uint8_t i = 0; i < len; i++) {
       drawChar((int16_t)(poX + sumX), (int16_t)poY, string[i], textcolor,
                textbgcolor, textsize_x, textsize_y);
-      sumX += cwidth / (len - 2) + padding;
+      sumX += cwidth / len + padding;
     }
   } else {
     setCursor(poX, poY);
-    for (uint8_t i = 0; i < len - 2; i++) {
+    for (uint8_t i = 0; i < len; i++) {
       drawFontChar(string[i]);
       setCursor(cursor_x, cursor_y);
     }
@@ -5030,65 +5271,23 @@ void ILI9341_t3n::waitTransmitComplete(void) {
   //    digitalWriteFast(2, LOW);
 }
 
+uint16_t ILI9341_t3n::waitTransmitCompleteReturnLast() {
+  uint32_t val=0;
+  //    digitalWriteFast(2, HIGH);
+
+  while (pending_rx_count) {
+    if ((_pimxrt_spi->RSR & LPSPI_RSR_RXEMPTY) == 0) {
+      val = _pimxrt_spi->RDR; // Read any pending RX bytes in
+      pending_rx_count--;     // decrement count of bytes still levt
+    }
+  }
+  _pimxrt_spi->CR = LPSPI_CR_MEN | LPSPI_CR_RRF; // Clear RX FIFO
+  return val;
+  //    digitalWriteFast(2, LOW);
+}
+
 void ILI9341_t3n::waitTransmitComplete(uint32_t mcr) {
   // BUGBUG:: figure out if needed...
   waitTransmitComplete();
 }
-
-/***************************************************************************************
-** Include MyFunctions
-***************************************************************************************/
-// Draw a arc outline
-void ILI9341_t3n::drawArc(int x, int y, int r, int startAngle, int endAngle, uint16_t color) {
-	/* original code from Henning Karlsen (http://www.rinkydinkelectronics.com)
-	  This library is free software; you can redistribute it and/or
-	  modify it under the terms of the CC BY-NC-SA 3.0 license.
-	  Please see the included documents for further information.
-	*/
-	int cx, cy;
-	startAngle -= 90;
-	endAngle   -= 90;
-
-	if (startAngle != endAngle) {
-		for (int d = startAngle + 1; d < endAngle + 1; d++) {
-			cx = x + cos((d * 3.14) / 180) * r;
-			cy = y + sin((d * 3.14) / 180) * r;
-			drawPixel(cx, cy, color);
-		}
-	} else {
-		cx = x + cos((startAngle * 3.14) / 180) * r;
-		cy = y + sin((startAngle * 3.14) / 180) * r;
-		drawPixel(cx, cy, color);
-	}
-}
-
-void ILI9341_t3n::drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t length, uint16_t color)
-{
-	//beginTransaction();
-	uint16_t x1 = x + length * cos((angle + _angleOffset) * DEG_TO_RAD);
-	uint16_t y1 = y + length * sin((angle + _angleOffset) * DEG_TO_RAD);
-	
-	if ((x1 > x) && (x1 > WIDTH)) x1 = WIDTH -1;
-	if ((x1 < x) && (x1 < 0)) x1 = 0;
-	
-	if ((y1 > y) && (y1 > HEIGHT)) y1 = HEIGHT -1;
-	if ((y1 < y) && (y1 < 0)) y1 = 0;
-	
-	drawLine(
-		x,
-		y,
-		x1,
-		y1, color);
-	//endTransaction();
-}
-
-void ILI9341_t3n::drawLineByAngle(int16_t x, int16_t y, int16_t angle, uint16_t start, uint16_t length, uint16_t color)
-{
-	drawLine(
-		x + start * cos((angle + _angleOffset) * DEG_TO_RAD),
-		y + start * sin((angle + _angleOffset) * DEG_TO_RAD),
-		x + (start + length) * cos((angle + _angleOffset) * DEG_TO_RAD),
-		y + (start + length) * sin((angle + _angleOffset) * DEG_TO_RAD), color);
-}
-
 #endif
